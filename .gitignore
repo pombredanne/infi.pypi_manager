@@ -31,6 +31,7 @@ build/
 dist/
 src/infi/hello/__version__.py
 .achievements
+bootstrap.py
 
 # scm
 .bzr/
@@ -45,3 +46,6 @@ parts/*.msi
 
 
 src/infi/pypi_manager/__version__.py
+.cache
+eggs
+parts

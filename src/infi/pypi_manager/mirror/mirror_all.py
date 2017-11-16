@@ -3,15 +3,24 @@ try:
 except ImportError:
     from md5 import md5
 import os
-import socket
-import httplib
 import base64
-import urlparse
-import cStringIO as StringIO
-import urllib
+import socket
+try:
+    from httplib import HTTPConnection, HTTPSConnection
+    from urlparse import urlparse
+    from cStringIO import StringIO
+    from urllib import urlretrieve
+    string_types = (str, unicode)
+except ImportError:
+    # Python 3
+    from http.client import HTTPConnection, HTTPSConnection
+    from urllib.parse import urlparse
+    from io import StringIO
+    from urllib.request import urlretrieve
+    string_types = (str,)
 
 from infi.pyutils.contexts import contextmanager
-from infi.pypi_manager import PyPI
+from infi.pypi_manager import PyPI, DistributionNotFound
 
 from logging import getLogger
 logger = getLogger()
@@ -19,15 +28,15 @@ logger = getLogger()
 def send_setuptools_request(repository, username, password, data):
     # code taken from distribute 0.6.35, file ./setuptools/command/upload.py
     # changed logging and return value
-    
+
     # set up the authentication
-    auth = "Basic " + base64.encodestring(username + ":" + password).strip()
+    auth = "Basic " + base64.encodestring((username + ":" + password).encode("ascii")).strip().decode("ascii")
 
     # Build up the MIME payload for the POST data
     boundary = '--------------GHSKFJDLGDS7543FJKLFHRE75642756743254'
     sep_boundary = '\n--' + boundary
     end_boundary = sep_boundary + '--'
-    body = StringIO.StringIO()
+    body = StringIO()
     for key, value in data.items():
         # handle multiple entries for the same name
         if type(value) != type([]):
@@ -56,14 +65,14 @@ def send_setuptools_request(repository, username, password, data):
     # We can't use urllib2 since we need to send the Basic
     # auth right with the first request
     schema, netloc, url, params, query, fragments = \
-        urlparse.urlparse(repository)
+        urlparse(repository)
     assert not params and not query and not fragments
     if schema == 'http':
-        http = httplib.HTTPConnection(netloc)
+        http = HTTPConnection(netloc)
     elif schema == 'https':
-        http = httplib.HTTPSConnection(netloc)
+        http = HTTPSConnection(netloc)
     else:
-        raise AssertionError, "unsupported schema "+schema
+        raise AssertionError("unsupported schema "+schema)
 
     data = ''
     try:
@@ -75,7 +84,7 @@ def send_setuptools_request(repository, username, password, data):
         http.putheader('Authorization', auth)
         http.endheaders()
         http.send(body)
-    except socket.error, e:
+    except socket.error as e:
         logger.exception("")
         return
 
@@ -106,11 +115,11 @@ def mirror_file(repository_config, filename, package_name, package_version, meta
     }
 
     data.update(metadata)
-    
-    for key, value in data.items():
-        if isinstance(value, unicode):
+
+    for key, value in list(data.items()):
+        if isinstance(value, string_types) and not isinstance(value, str):
             data[key] = value.encode("utf-8")
-    
+
     repository = repository_config["repository"]
     username = repository_config.get("username", "")
     password = repository_config.get("password", "")
@@ -119,7 +128,7 @@ def mirror_file(repository_config, filename, package_name, package_version, meta
 @contextmanager
 def temp_urlretrieve(url, localpath):
     logger.info("Retrieving {}".format(url))
-    urllib.urlretrieve(url, localpath)
+    urlretrieve(url, localpath)
     try:
         yield
     finally:
@@ -137,7 +146,7 @@ def mirror_release(repository_config, package_name, version, version_data, relea
     }
     for key in ['license', 'author', 'author_email', 'home_page', 'platform', 'summary', 'classifiers', 'description']:
         metadata[key] = version_data[key]
-    
+
     with temp_urlretrieve(release_data['url'], release_data['filename']):
         return mirror_file(repository_config, release_data['filename'], package_name, version, metadata)
 
@@ -152,15 +161,18 @@ def get_repository_config(server_name):
 
 def mirror_package(server_name, package_name, version=None):
     pypi = PyPI()
-    if version is None:
-        version = pypi.get_latest_version(package_name)
-    version_data = pypi._client.release_data(package_name, version)
+    version = version or pypi.get_latest_version(package_name)
+    version_data = pypi.get_release_data(package_name, version)
     release_dataset = pypi._client.release_urls(package_name, version)
     repository_config = get_repository_config(server_name)
     final_result = True
-    
+
+    if not release_dataset:
+        msg = "No distributions found for {} {} (maybe you should try to build from download url?)"
+        raise DistributionNotFound(msg.format(package_name, version))
+
     for release_data in release_dataset:
         result = mirror_release(repository_config, package_name, version, version_data, release_data)
         final_result = final_result and result
-        
+
     return final_result
